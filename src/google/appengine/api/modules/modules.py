@@ -54,6 +54,7 @@ import six
 from google.appengine.api import apiproxy_stub_map
 from google.appengine.api.modules import modules_service_pb2
 from google.appengine.runtime import apiproxy_errors
+from googleapiclient import discovery
 
 
 class Error(Exception):
@@ -196,23 +197,17 @@ def get_versions(module=None):
     `InvalidModuleError` if the given module isn't valid, `TransientError` if
     there is an issue fetching the information.
   """
-
-  def _ResultHook(rpc):
-    mapped_errors = [
-        modules_service_pb2.ModulesServiceError.INVALID_MODULE,
-        modules_service_pb2.ModulesServiceError.TRANSIENT_ERROR
-    ]
-    _CheckAsyncResult(rpc, mapped_errors, {})
-
-
-    return rpc.response.version
-
-  request = modules_service_pb2.GetVersionsRequest()
-  if module:
-    request.module = module
-  response = modules_service_pb2.GetVersionsResponse()
-  return _MakeAsyncCall('GetVersions', request, response,
-                        _ResultHook).get_result()
+  
+  project = os.environ.get('GCP_PROJECT')
+  if not module:
+    module = os.environ.get('GAE_SERVICE', 'default')
+  
+  client = discovery.build('appengine', 'v1')
+  request = client.apps().services().versions().list(
+      appsId=project_id, servicesId=service_id, view='FULL')
+  response = request.execute()
+  
+  return response.get('versions', [])
 
 
 def get_default_version(module=None):
