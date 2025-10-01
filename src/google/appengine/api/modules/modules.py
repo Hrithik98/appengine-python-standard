@@ -200,7 +200,7 @@ def get_versions(module=None):
   if not module:
     module = os.environ.get('GAE_SERVICE', 'default')
   
-  project = os.environ.get('GCP_PROJECT')
+  project = os.environ.get('GAE_APPLICATION') or os.environ.get('GOOGLE_CLOUD_PROJECT')
   logging.info("#################" + project)
   client = discovery.build('appengine', 'v1')
   request = client.apps().services().versions().list(
