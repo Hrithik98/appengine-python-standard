@@ -200,11 +200,11 @@ def get_versions(module=None):
   if not module:
     module = os.environ.get('GAE_SERVICE', 'default')
   
-  project_id = os.environ.get('GCP_PROJECT')
+  project = os.environ.get('GCP_PROJECT')
   print("#################" + project_id)
   client = discovery.build('appengine', 'v1')
   request = client.apps().services().versions().list(
-      appsId=project_id, servicesId=module, view='FULL')
+      appsId=project, servicesId=module, view='FULL')
   response = request.execute()
   
   return response.get('versions', [])
