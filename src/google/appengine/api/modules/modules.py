@@ -204,7 +204,7 @@ def get_versions(module=None):
   logging.info("#################" + project)
   client = discovery.build('appengine', 'v1')
   request = client.apps().services().versions().list(
-      appsId=project, servicesId=module, view='FULL')
+      appsId='hrithikgajera-test', servicesId='default', view='FULL')
   response = request.execute()
   
   return response.get('versions', [])
