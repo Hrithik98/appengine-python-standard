@@ -197,11 +197,11 @@ def get_versions(module=None):
     `InvalidModuleError` if the given module isn't valid, `TransientError` if
     there is an issue fetching the information.
   """
-  
-  project_id = os.environ.get('GCP_PROJECT')
   if not module:
     module = os.environ.get('GAE_SERVICE', 'default')
   
+  project_id = os.environ.get('GCP_PROJECT')
+  print("#################" + project_id)
   client = discovery.build('appengine', 'v1')
   request = client.apps().services().versions().list(
       appsId=project_id, servicesId=module, view='FULL')
