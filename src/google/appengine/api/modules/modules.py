@@ -201,7 +201,7 @@ def get_versions(module=None):
     module = os.environ.get('GAE_SERVICE', 'default')
   
   project = os.environ.get('GCP_PROJECT')
-  print("#################" + project_id)
+  logging.info("#################" + project_id)
   client = discovery.build('appengine', 'v1')
   request = client.apps().services().versions().list(
       appsId=project, servicesId=module, view='FULL')
