@@ -169,17 +169,17 @@ def get_modules():
       the name of the module that is associated with the instance that calls
       this function.
   """
-
-  def _ResultHook(rpc):
-    _CheckAsyncResult(rpc, [], {})
-
-
-    return rpc.response.module
-
-  request = modules_service_pb2.GetModulesRequest()
-  response = modules_service_pb2.GetModulesResponse()
-  return _MakeAsyncCall('GetModules', request, response,
-                        _ResultHook).get_result()
+  project = os.environ.get('GAE_PROJECT') or os.environ.get('GOOGLE_CLOUD_PROJECT')
+  if project is None:
+    appId = os.environ.get('GAE_APPLICATION')
+    project = appId.split('~', 1)[1]
+  parent = f'apps/{project}'
+  service = discovery.build('appengine', 'v1')
+  request = client.apps().services().list(parent=parent)
+  response = request.execute()
+  
+  return [service['id'] for service in response.get('services', [])]
+  
 
 
 def get_versions(module=None):
@@ -199,15 +199,16 @@ def get_versions(module=None):
   """
   if not module:
     module = os.environ.get('GAE_SERVICE', 'default')
-  
-  project = os.environ.get('GAE_APPLICATION') or os.environ.get('GOOGLE_CLOUD_PROJECT')
-  logging.info("#################" + project)
+  project = os.environ.get('GAE_PROJECT') or os.environ.get('GOOGLE_CLOUD_PROJECT')
+  if project is None:
+    appId = os.environ.get('GAE_APPLICATION')
+    project = appId.split('~', 1)[1]
   client = discovery.build('appengine', 'v1')
   request = client.apps().services().versions().list(
-      appsId='hrithikgajera-test', servicesId='default', view='FULL')
+      appsId=project, servicesId=module, view='FULL')
   response = request.execute()
   
-  return response.get('versions', [])
+  return [version['id'] for version in response.get('versions', [])]
 
 
 def get_default_version(module=None):
@@ -224,21 +225,36 @@ def get_default_version(module=None):
     `InvalidModuleError` if the given module is not valid, `InvalidVersionError`
     if no default version could be found.
   """
-
-  def _ResultHook(rpc):
-    mapped_errors = [
-        modules_service_pb2.ModulesServiceError.INVALID_MODULE,
-        modules_service_pb2.ModulesServiceError.INVALID_VERSION
-    ]
-    _CheckAsyncResult(rpc, mapped_errors, {})
-    return rpc.response.version
-
-  request = modules_service_pb2.GetDefaultVersionRequest()
-  if module:
-    request.module = module
-  response = modules_service_pb2.GetDefaultVersionResponse()
-  return _MakeAsyncCall('GetDefaultVersion', request, response,
-                        _ResultHook).get_result()
+  if not module:
+    module = os.environ.get('GAE_SERVICE', 'default')
+  project = os.environ.get('GAE_PROJECT') or os.environ.get('GOOGLE_CLOUD_PROJECT')
+  if project is None:
+    appId = os.environ.get('GAE_APPLICATION')
+    project = appId.split('~', 1)[1]
+  client = discovery.build('appengine', 'v1')
+  request = client.apps().services().get(
+    appsId=project, services_id=module)
+    
+  response = request.execute()
+  
+  allocations = response.get('split', {}).get('allocations')
+  maxAlloc = -1
+  retVersion = None
+  for version, allocation in allocations : 
+    if allocation == 1.0:
+      retVersion = version
+      break
+    
+    if allocation > maxAlloc : 
+      retVersion = version
+      maxAlloc = allocation
+    else if allocation == maxAlloc:
+      if version < retVersion:
+        retVersion = version
+  
+  return retVersion
+  
+  
 
 
 def get_num_instances(
