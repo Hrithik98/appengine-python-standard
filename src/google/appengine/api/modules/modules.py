@@ -175,7 +175,7 @@ def get_modules():
     project = appId.split('~', 1)[1]
   parent = 'apps/' + project
   client = discovery.build('appengine', 'v1')
-  request = client.apps().services().list(parent)
+  request = client.apps().services().list(appsId=project)
   response = request.execute()
   
   return [service['id'] for service in response.get('services', [])]
