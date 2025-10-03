@@ -174,7 +174,7 @@ def get_modules():
     appId = os.environ.get('GAE_APPLICATION')
     project = appId.split('~', 1)[1]
   parent = f'apps/{project}'
-  service = discovery.build('appengine', 'v1')
+  client = discovery.build('appengine', 'v1')
   request = client.apps().services().list(parent=parent)
   response = request.execute()
   
