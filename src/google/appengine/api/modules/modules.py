@@ -233,7 +233,7 @@ def get_default_version(module=None):
     project = appId.split('~', 1)[1]
   client = discovery.build('appengine', 'v1')
   request = client.apps().services().get(
-    appsId=project, services_id=module)
+    appsId=project, servicesId=module)
     
   response = request.execute()
   
