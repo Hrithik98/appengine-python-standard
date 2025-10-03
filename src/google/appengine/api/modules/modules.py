@@ -248,7 +248,7 @@ def get_default_version(module=None):
     if allocation > maxAlloc : 
       retVersion = version
       maxAlloc = allocation
-    else if allocation == maxAlloc:
+    elif allocation == maxAlloc:
       if version < retVersion:
         retVersion = version
   
