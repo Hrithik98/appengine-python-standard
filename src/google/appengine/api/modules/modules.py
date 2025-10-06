@@ -240,7 +240,7 @@ def get_default_version(module=None):
   allocations = response.get('split', {}).get('allocations')
   maxAlloc = -1
   retVersion = None
-  for version, allocation in allocations : 
+  for version, allocation in allocations.items() : 
     if allocation == 1.0:
       retVersion = version
       break
