@@ -486,23 +486,27 @@ def get_hostname(
     TypeError: if the given instance type is invalid.
   """
 
-  def _ResultHook(rpc):
-    mapped_errors = [
-        modules_service_pb2.ModulesServiceError.INVALID_MODULE,
-        modules_service_pb2.ModulesServiceError.INVALID_INSTANCES
-    ]
-    _CheckAsyncResult(rpc, mapped_errors, [])
-    return rpc.response.hostname
+  if module is None:
+    module = get_current_module_name()
+    
+  if version is None:
+    version = get_current_version_name()
+  
+  project = os.environ.get('GAE_PROJECT') or os.environ.get('GOOGLE_CLOUD_PROJECT')
+  if project is None:
+    appId = os.environ.get('GAE_APPLICATION')
+    project = appId.split('~', 1)[1]
+  
+  client = discovery.build('appengine', 'v1')
+  request = client.apps().get(appsId=project)
+  response = request.execute()
+  default_hostname = response.get('defaultHostname')
+  
+  hostname_parts = []
+  if instance:
+    hostname_parts.append(instance)
+  hostname_parts.append(version)
+  hostname_parts.append(module)
+  hostname_parts.append(default_hostname)
 
-  request = modules_service_pb2.GetHostnameRequest()
-  if module:
-    request.module = module
-  if version:
-    request.version = version
-  if instance or instance == 0:
-    if not isinstance(instance, (six.string_types, six.integer_types)):
-      raise TypeError("'instance' arg must be of type basestring, long or int.")
-    request.instance = str(instance)
-  response = modules_service_pb2.GetHostnameResponse()
-  return _MakeAsyncCall('GetHostname', request, response,
-                        _ResultHook).get_result()
+  return ".".join(hostname_parts)
