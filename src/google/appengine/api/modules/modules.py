@@ -293,7 +293,7 @@ def get_num_instances(
     project = appId.split('~', 1)[1]
     
   client = discovery.build('appengine', 'v1')
-  request = service.apps().services().versions().get(
+  request = client.apps().services().versions().get(
         appsId=project, servicesId=module, versionsId=version)
         
   response = request.execute()
