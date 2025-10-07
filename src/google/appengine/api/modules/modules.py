@@ -281,19 +281,26 @@ def get_num_instances(
     `InvalidVersionError` on invalid input.
   """
 
-  def _ResultHook(rpc):
-    mapped_errors = [modules_service_pb2.ModulesServiceError.INVALID_VERSION]
-    _CheckAsyncResult(rpc, mapped_errors, {})
-    return rpc.response.instances
-
-  request = modules_service_pb2.GetNumInstancesRequest()
-  if module:
-    request.module = module
-  if version:
-    request.version = version
-  response = modules_service_pb2.GetNumInstancesResponse()
-  return _MakeAsyncCall('GetNumInstances', request, response,
-                        _ResultHook).get_result()
+  if module is None:
+    module = get_current_module_name()
+    
+  if version is None:
+    version = get_current_version_name()
+    
+  project = os.environ.get('GAE_PROJECT') or os.environ.get('GOOGLE_CLOUD_PROJECT')
+  if project is None:
+    appId = os.environ.get('GAE_APPLICATION')
+    project = appId.split('~', 1)[1]
+    
+  client = discover.build('appengine', 'v1')
+  request = service.apps().services().versions().get(
+        appsId=project, servicesId=module, versionsId=version)
+        
+  response = request.execute()
+  if 'manualScaling' in response:
+      return response['manualScaling'].get('instances')
+  
+  return 0
 
 
 def set_num_instances(
