@@ -292,7 +292,7 @@ def get_num_instances(
     appId = os.environ.get('GAE_APPLICATION')
     project = appId.split('~', 1)[1]
     
-  client = discover.build('appengine', 'v1')
+  client = discovery.build('appengine', 'v1')
   request = service.apps().services().versions().get(
         appsId=project, servicesId=module, versionsId=version)
         
