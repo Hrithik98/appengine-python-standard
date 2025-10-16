@@ -55,6 +55,8 @@ from google.appengine.api import apiproxy_stub_map
 from google.appengine.api.modules import modules_service_pb2
 from google.appengine.runtime import apiproxy_errors
 from googleapiclient import discovery
+from google.auth.transport import requests
+import google.auth
 
 
 class Error(Exception):
@@ -174,7 +176,7 @@ def get_modules():
     appId = os.environ.get('GAE_APPLICATION')
     project = appId.split('~', 1)[1]
   parent = 'apps/' + project
-  client = discovery.build('appengine', 'v1')
+  client = create_regional_admin_client()
   request = client.apps().services().list(appsId=project)
   response = request.execute()
   
@@ -510,3 +512,68 @@ def get_hostname(
   hostname_parts.append(default_hostname)
 
   return ".".join(hostname_parts)
+  
+  
+def get_current_region():
+  """
+  Dynamically determines the current GCP region by querying the metadata service.
+  This is the most reliable way to get the region from within a GCP environment.
+
+  Returns:
+      str: The GCP region (e.g., 'us-central1'), or None if not found.
+  """
+  try:
+    # google-auth can automatically fetch the project ID and other metadata
+    # in a GCP environment. We can get the region from the instance metadata.
+    scoped_credentials, _ = google.auth.default(
+        scopes=['https://www.googleapis.com/auth/cloud-platform'])
+
+    # The request object is needed to make authenticated calls
+    authed_session = requests.AuthorizedSession(scoped_credentials)
+
+    # The metadata server URL for the instance's zone
+    metadata_url = 'http://metadata.google.internal/computeMetadata/v1/instance/zone'
+    metadata_response = authed_session.get(
+        metadata_url,
+        headers={'Metadata-Flavor': 'Google'}
+    )
+    metadata_response.raise_for_status() # Raises an HTTPError for bad responses
+
+    # The response is in the format 'projects/PROJECT_NUM/zones/ZONE'.
+    # We extract the zone (e.g., 'us-central1-a').
+    zone = metadata_response.text.split('/')[-1]
+        
+    # The region is the zone without the final letter.
+    return zone[:-2]
+
+  except Exception:
+    return None
+    
+def create_regional_admin_client():
+  """
+  Creates an App Engine Admin API client configured for the region
+  where the code is currently running.
+
+  Returns:
+      A Google API client resource object for the current region, or a global
+      client if the region cannot be determined.
+  """
+  region = get_current_region()
+
+  if not region:
+    print("Warning: Could not determine region. Falling back to global endpoint.")
+    return discovery.build('appengine', 'v1')
+
+  print(f"Detected region: {region}. Creating regional client.")
+
+  # The regional endpoint format for the App Engine Admin API
+  regional_endpoint = f'https://{region}-appengine.googleapis.com'
+
+  # Build the service object, passing the regional endpoint URL
+  admin_api_client = discovery.build(
+    'appengine',
+    'v1',
+    static_discovery=False,
+    discoveryServiceUrl=f'{regional_endpoint}/$discovery/rest?version=v1'
+  )
+  return admin_api_client
