@@ -573,7 +573,6 @@ def create_regional_admin_client():
   admin_api_client = discovery.build(
     'appengine',
     'v1',
-    static_discovery=False,
     discoveryServiceUrl=f'{regional_endpoint}/$discovery/rest?version=v1'
   )
   return admin_api_client
