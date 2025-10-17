@@ -57,6 +57,7 @@ from google.appengine.runtime import apiproxy_errors
 from googleapiclient import discovery
 from google.auth.transport import requests
 import google.auth
+from google.appengine.v1 import AppEngineAdminClient
 from google.api_core.client_options import ClientOptions
 
 
@@ -177,11 +178,11 @@ def get_modules():
     appId = os.environ.get('GAE_APPLICATION')
     project = appId.split('~', 1)[1]
   parent = 'apps/' + project
-  client = create_regional_admin_client()
-  request = client.apps().services().list(appsId=project)
-  response = request.execute()
+  admin_client = create_regional_admin_client()
+  request = ListServicesRequest(parent=parent)
+  response = admin_client.list_services(request=request)
   
-  return [service['id'] for service in response.get('services', [])]
+  return [service.id for service in response]
   
 
 
@@ -563,7 +564,7 @@ def create_regional_admin_client():
 
   if not region:
     print("Warning: Could not determine region. Falling back to global endpoint.")
-    return discovery.build('appengine', 'v1')
+    return AppEngineAdminClient()
 
   print(f"Detected region: {region}. Creating regional client.")
 
@@ -573,9 +574,5 @@ def create_regional_admin_client():
   client_opts = ClientOptions(api_endpoint=regional_endpoint)
 
   # Build the service object, passing the regional endpoint URL
-  admin_api_client = discovery.build(
-    'appengine',
-    'v1',
-    client_options=client_opts
-  )
+  admin_api_client = AppEngineAdminClient(client_options=client_options)
   return admin_api_client
