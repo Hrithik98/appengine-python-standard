@@ -570,7 +570,7 @@ def create_regional_admin_client():
   # The regional endpoint format for the App Engine Admin API
   regional_endpoint = f'https://{region}-appengine.googleapis.com'
   
-  client_opts = ClientOptions(api_endpoint=regional_api_endpoint)
+  client_opts = ClientOptions(api_endpoint=regional_endpoint)
 
   # Build the service object, passing the regional endpoint URL
   admin_api_client = discovery.build(
