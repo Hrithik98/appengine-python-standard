@@ -57,6 +57,7 @@ from google.appengine.runtime import apiproxy_errors
 from googleapiclient import discovery
 from google.auth.transport import requests
 import google.auth
+from google.api_core.client_options import ClientOptions
 
 
 class Error(Exception):
@@ -568,12 +569,13 @@ def create_regional_admin_client():
 
   # The regional endpoint format for the App Engine Admin API
   regional_endpoint = f'https://{region}-appengine.googleapis.com'
+  
+  client_opts = ClientOptions(api_endpoint=regional_api_endpoint)
 
   # Build the service object, passing the regional endpoint URL
   admin_api_client = discovery.build(
     'appengine',
     'v1',
-    static_discovery=False,
-    discoveryServiceUrl=f'{regional_endpoint}/$discovery/rest?version=v1'
+    client_options=client_opts
   )
   return admin_api_client
