@@ -355,14 +355,40 @@ def set_num_instances_async(
 
   if not isinstance(instances, six.integer_types):
     raise TypeError("'instances' arg must be of type long or int.")
-  request = modules_service_pb2.SetNumInstancesRequest()
-  request.instances = instances
-  if module:
-    request.module = module
-  if version:
-    request.version = version
-  response = modules_service_pb2.SetNumInstancesResponse()
-  return _MakeAsyncCall('SetNumInstances', request, response, _ResultHook)
+  project_id = os.environ.get('GAE_APPLICATION', '').split('~')[-1]
+  if module is None:
+    module = get_current_module_name()
+  if version is None:
+    version = get_current_version_name()
+  
+  client = discovery.build('appengine', 'v1')
+  
+  body = {
+      'manualScaling': {
+          'instances': instances
+      }
+  }
+  update_mask = 'manualScaling.instances'
+  rpc = apiproxy_stub_map.UserRPC('modules')
+  
+  def run_request():
+    try:
+      client.apps().services().versions().patch(
+          appsId=project_id,
+          servicesId=module,
+          versionsId=version,
+          updateMask=update_mask,
+          body=body).execute()
+      rpc.set_result(None)
+    except Exception as e:
+      # A complete implementation would map exceptions from the Admin API
+      # to the specific error types of the modules API.
+      rpc.set_error(e)
+
+  thread = threading.Thread(target=run_request)
+  thread.start()
+
+  return rpc
 
 
 def start_version(module, version):
