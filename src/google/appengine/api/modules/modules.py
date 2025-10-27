@@ -48,6 +48,7 @@ __all__ = [
 
 import logging
 import os
+import threading
 
 import six
 
