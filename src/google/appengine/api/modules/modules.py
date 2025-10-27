@@ -325,7 +325,8 @@ def set_num_instances(
     `TypeError` if the given instances type is invalid.
   """
   rpc = set_num_instances_async(instances, module, version)
-  rpc.get_result()
+  rpc.wait()
+  rpc.check_success()
 
 
 def set_num_instances_async(
