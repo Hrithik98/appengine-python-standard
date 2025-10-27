@@ -57,8 +57,6 @@ from google.appengine.runtime import apiproxy_errors
 from googleapiclient import discovery
 from google.auth.transport import requests
 import google.auth
-from google.appengine.v1 import AppEngineAdminClient
-from google.api_core.client_options import ClientOptions
 
 
 class Error(Exception):
@@ -178,11 +176,11 @@ def get_modules():
     appId = os.environ.get('GAE_APPLICATION')
     project = appId.split('~', 1)[1]
   parent = 'apps/' + project
-  admin_client = create_regional_admin_client()
-  request = ListServicesRequest(parent=parent)
-  response = admin_client.list_services(request=request)
+  client = discovery.build('appengine', 'v1')
+  request = client.apps().services().list(appsId=project)
+  response = request.execute()
   
-  return [service.id for service in response]
+  return [service['id'] for service in response.get('services', [])]
   
 
 
