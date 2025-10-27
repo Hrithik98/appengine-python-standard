@@ -371,18 +371,13 @@ def set_num_instances_async(
   rpc = apiproxy_stub_map.UserRPC('modules')
   
   def run_request():
-    try:
-      client.apps().services().versions().patch(
-          appsId=project_id,
-          servicesId=module,
-          versionsId=version,
-          updateMask=update_mask,
-          body=body).execute()
-      rpc.set_result(None)
-    except Exception as e:
-      # A complete implementation would map exceptions from the Admin API
-      # to the specific error types of the modules API.
-      rpc.set_error(e)
+    client.apps().services().versions().patch(
+        appsId=project_id,
+        servicesId=module,
+        versionsId=version,
+        updateMask=update_mask,
+        body=body).execute()
+    rpc.set_result(None)
 
   thread = threading.Thread(target=run_request)
   thread.start()
