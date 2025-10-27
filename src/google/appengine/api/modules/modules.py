@@ -377,7 +377,6 @@ def set_num_instances_async(
         versionsId=version,
         updateMask=update_mask,
         body=body).execute()
-    rpc.set_result(None)
 
   thread = threading.Thread(target=run_request)
   thread.start()
