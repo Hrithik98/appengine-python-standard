@@ -422,18 +422,16 @@ def start_version(module, version):
   rpc.get_result()
 
 
-def start_version_async(
-    module,
-    version):
-  """Returns a `UserRPC` to start all instances for the given module version.
+def start_version_async(module, version):
+    """Returns a `UserRPC` to start the module version.
 
-  Args:
-    module: String containing the name of the module to affect.
-    version: String containing the name of the version of the module to start.
+    Args:
+      module: The module to start.
+      version: The version to start.
 
-  Returns:
-    A `UserRPC` to start all instances for the given module version.
-  """
+    Returns:
+      A `UserRPC` to start the module version.
+    """
 
     class _ThreadedRpc:
         """A class to emulate the UserRPC object for threaded operations."""
@@ -452,18 +450,24 @@ def start_version_async(
             finally:
                 self.done.set()
 
-        def get_result(self):
-          self.done.wait()
-          if self.exception:
-                # Re-raise the exception caught in the thread
+        def wait(self):
+            self.done.wait()
+
+        def check_success(self):
+            if self.exception:
                 raise self.exception
-                
-      project_id = os.environ.get('GAE_APPLICATION', '').split('~')[-1]
-      def run_request():
+
+        def get_result(self):
+            self.wait()
+            self.check_success()
+            return None
+
+    project_id = os.environ.get('GAE_APPLICATION', '').split('~')[-1]
+
+    def run_request():
         """This function will be executed in a separate thread."""
         try:
             client = discovery.build('appengine', 'v1')
-            # To start a version, we patch its servingStatus to SERVING.
             body = {'servingStatus': 'SERVING'}
             update_mask = 'servingStatus'
             client.apps().services().versions().patch(
@@ -501,21 +505,17 @@ def stop_version(
   rpc.get_result()
 
 
-def stop_version_async(
-    module=None,
-    version=None):
-  """Returns a `UserRPC` to stop all instances for the given module version.
+def stop_version_async(module, version):
+    """Returns a `UserRPC` to stop the module version.
 
-  Args:
-    module: The module to affect, if `None` the current module is used.
-    version: The version of the given module to affect, if `None` the current
-      version is used.
+    Args:
+      module: The module to stop.
+      version: The version to stop.
 
-  Returns:
-    A `UserRPC` to stop all instances for the given module version.
-  """
-
-  class _ThreadedRpc:
+    Returns:
+      A `UserRPC` to stop the module version.
+    """
+    class _ThreadedRpc:
         """A class to emulate the UserRPC object for threaded operations."""
 
         def __init__(self, target):
@@ -532,18 +532,24 @@ def stop_version_async(
             finally:
                 self.done.set()
 
-        def get_result(self):
-          self.done.wait()
-          if self.exception:
-                # Re-raise the exception caught in the thread
+        def wait(self):
+            self.done.wait()
+
+        def check_success(self):
+            if self.exception:
                 raise self.exception
-                
-      project_id = os.environ.get('GAE_APPLICATION', '').split('~')[-1]
-      def run_request():
+
+        def get_result(self):
+            self.wait()
+            self.check_success()
+            return None
+
+    project_id = os.environ.get('GAE_APPLICATION', '').split('~')[-1]
+
+    def run_request():
         """This function will be executed in a separate thread."""
         try:
             client = discovery.build('appengine', 'v1')
-            # To start a version, we patch its servingStatus to SERVING.
             body = {'servingStatus': 'STOPPED'}
             update_mask = 'servingStatus'
             client.apps().services().versions().patch(
