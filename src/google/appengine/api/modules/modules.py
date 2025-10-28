@@ -346,43 +346,71 @@ def set_num_instances_async(
     A `UserRPC` to set the number of instances on the module version.
   """
 
-  def _ResultHook(rpc):
-    mapped_errors = [
-        modules_service_pb2.ModulesServiceError.INVALID_VERSION,
-        modules_service_pb2.ModulesServiceError.TRANSIENT_ERROR
-    ]
-    _CheckAsyncResult(rpc, mapped_errors, {})
+  class _ThreadedRpc:
+        """A class to emulate the UserRPC object for threaded operations."""
 
-  if not isinstance(instances, six.integer_types):
-    raise TypeError("'instances' arg must be of type long or int.")
-  project_id = os.environ.get('GAE_APPLICATION', '').split('~')[-1]
-  if module is None:
-    module = get_current_module_name()
-  if version is None:
-    version = get_current_version_name()
-  
-  client = discovery.build('appengine', 'v1')
-  
-  body = {
-      'manualScaling': {
-          'instances': instances
-      }
-  }
-  update_mask = 'manualScaling.instances'
-  rpc = apiproxy_stub_map.UserRPC('modules')
-  
-  def run_request():
-    client.apps().services().versions().patch(
-        appsId=project_id,
-        servicesId=module,
-        versionsId=version,
-        updateMask=update_mask,
-        body=body).execute()
+    def __init__(self, target):
+      self.thread = threading.Thread(target=self._run_target, args=(target,))
+      self.exception = None
+      self.done = threading.Event()
+      self.thread.start()
 
-  thread = threading.Thread(target=run_request)
-  thread.start()
+    def _run_target(self, target):
+      try:
+        target()
+      except Exception as e:
+        self.exception = e
+      finally:
+        self.done.set()
 
-  return rpc
+      def wait(self):
+        self.done.wait()
+
+      def check_success(self):
+        if self.exception:
+            # Re-raise the exception caught in the thread
+          raise self.exception
+
+    if not isinstance(instances, six.integer_types):
+      raise TypeError("'instances' arg must be of type long or int.")
+
+    project_id = os.environ.get('GAE_PROJECT') or os.environ.get('GOOGLE_CLOUD_PROJECT')
+    if project_id is None:
+      appId = os.environ.get('GAE_APPLICATION')
+      project_id = appId.split('~', 1)[1]project = os.environ.get('GAE_PROJECT') or os.environ.get('GOOGLE_CLOUD_PROJECT')
+    if module is None:
+      module = get_current_module_name()
+    if version is None:
+      version = get_current_version_name()
+
+    def run_request():
+      """This function will be executed in a separate thread."""
+      try:
+        client = discovery.build('appengine', 'v1')
+        body = {
+            'manualScaling': {
+                'instances': instances
+            }
+        }
+        update_mask = 'manualScaling.instances'
+        client.apps().services().versions().patch(
+            appsId=project_id,
+            servicesId=module,
+            versionsId=version,
+            updateMask=update_mask,
+            body=body).execute()
+      except discovery.HttpError as e:
+        # Translate HTTP errors to the exceptions expected by the API
+        if e.resp.status == 400:
+          raise InvalidInstancesError(e) from e
+        elif e.resp.status == 404:
+          raise InvalidVersionError(e) from e
+        elif e.resp.status >= 500:
+          raise TransientError(e) from e
+        else:
+          raise Error(e) from e
+
+    return _ThreadedRpc(target=run_request)
 
 
 def start_version(module, version):
