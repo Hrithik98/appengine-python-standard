@@ -325,8 +325,7 @@ def set_num_instances(
     `TypeError` if the given instances type is invalid.
   """
   rpc = set_num_instances_async(instances, module, version)
-  rpc.wait()
-  rpc.check_success()
+  rpc.get_result()
 
 
 def set_num_instances_async(
@@ -363,11 +362,9 @@ def set_num_instances_async(
             finally:
                 self.done.set()
 
-        def wait(self):
-            self.done.wait()
-
-        def check_success(self):
-            if self.exception:
+        def get_result(self):
+          self.done.wait()
+          if self.exception:
                 # Re-raise the exception caught in the thread
                 raise self.exception
 
@@ -438,23 +435,52 @@ def start_version_async(
     A `UserRPC` to start all instances for the given module version.
   """
 
-  def _ResultHook(rpc):
-    mapped_errors = [
-        modules_service_pb2.ModulesServiceError.INVALID_VERSION,
-        modules_service_pb2.ModulesServiceError.TRANSIENT_ERROR
-    ]
-    expected_errors = {
-        modules_service_pb2.ModulesServiceError.UNEXPECTED_STATE:
-            'The specified module: %s, version: %s is already started.' %
-            (module, version)
-    }
-    _CheckAsyncResult(rpc, mapped_errors, expected_errors)
+    class _ThreadedRpc:
+        """A class to emulate the UserRPC object for threaded operations."""
 
-  request = modules_service_pb2.StartModuleRequest()
-  request.module = module
-  request.version = version
-  response = modules_service_pb2.StartModuleResponse()
-  return _MakeAsyncCall('StartModule', request, response, _ResultHook)
+        def __init__(self, target):
+            self.thread = threading.Thread(target=self._run_target, args=(target,))
+            self.exception = None
+            self.done = threading.Event()
+            self.thread.start()
+
+        def _run_target(self, target):
+            try:
+                target()
+            except Exception as e:
+                self.exception = e
+            finally:
+                self.done.set()
+
+        def get_result(self):
+          self.done.wait()
+          if self.exception:
+                # Re-raise the exception caught in the thread
+                raise self.exception
+                
+      project_id = os.environ.get('GAE_APPLICATION', '').split('~')[-1]
+      def run_request():
+        """This function will be executed in a separate thread."""
+        try:
+            client = discovery.build('appengine', 'v1')
+            # To start a version, we patch its servingStatus to SERVING.
+            body = {'servingStatus': 'SERVING'}
+            update_mask = 'servingStatus'
+            client.apps().services().versions().patch(
+                appsId=project_id,
+                servicesId=module,
+                versionsId=version,
+                updateMask=update_mask,
+                body=body).execute()
+        except discovery.HttpError as e:
+            if e.resp.status == 404:
+                raise InvalidVersionError(e) from e
+            elif e.resp.status >= 500:
+                raise TransientError(e) from e
+            else:
+                raise Error(e) from e
+
+    return _ThreadedRpc(target=run_request)
 
 
 def stop_version(
@@ -489,25 +515,52 @@ def stop_version_async(
     A `UserRPC` to stop all instances for the given module version.
   """
 
-  def _ResultHook(rpc):
-    mapped_errors = [
-        modules_service_pb2.ModulesServiceError.INVALID_VERSION,
-        modules_service_pb2.ModulesServiceError.TRANSIENT_ERROR
-    ]
-    expected_errors = {
-        modules_service_pb2.ModulesServiceError.UNEXPECTED_STATE:
-            'The specified module: %s, version: %s is already stopped.' %
-            (module, version)
-    }
-    _CheckAsyncResult(rpc, mapped_errors, expected_errors)
+  class _ThreadedRpc:
+        """A class to emulate the UserRPC object for threaded operations."""
 
-  request = modules_service_pb2.StopModuleRequest()
-  if module:
-    request.module = module
-  if version:
-    request.version = version
-  response = modules_service_pb2.StopModuleResponse()
-  return _MakeAsyncCall('StopModule', request, response, _ResultHook)
+        def __init__(self, target):
+            self.thread = threading.Thread(target=self._run_target, args=(target,))
+            self.exception = None
+            self.done = threading.Event()
+            self.thread.start()
+
+        def _run_target(self, target):
+            try:
+                target()
+            except Exception as e:
+                self.exception = e
+            finally:
+                self.done.set()
+
+        def get_result(self):
+          self.done.wait()
+          if self.exception:
+                # Re-raise the exception caught in the thread
+                raise self.exception
+                
+      project_id = os.environ.get('GAE_APPLICATION', '').split('~')[-1]
+      def run_request():
+        """This function will be executed in a separate thread."""
+        try:
+            client = discovery.build('appengine', 'v1')
+            # To start a version, we patch its servingStatus to SERVING.
+            body = {'servingStatus': 'STOPPED'}
+            update_mask = 'servingStatus'
+            client.apps().services().versions().patch(
+                appsId=project_id,
+                servicesId=module,
+                versionsId=version,
+                updateMask=update_mask,
+                body=body).execute()
+        except discovery.HttpError as e:
+            if e.resp.status == 404:
+                raise InvalidVersionError(e) from e
+            elif e.resp.status >= 500:
+                raise TransientError(e) from e
+            else:
+                raise Error(e) from e
+
+    return _ThreadedRpc(target=run_request)
 
 
 def get_hostname(
