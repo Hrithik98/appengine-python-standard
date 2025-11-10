@@ -179,6 +179,7 @@ def get_modules():
   parent = 'apps/' + project
   client = discovery.build('appengine', 'v1')
   request = client.apps().services().list(appsId=project)
+  request.headers['X-Goog-Api-Client'] = 'appengine-modules-api-python-client'
   response = request.execute()
   
   return [service['id'] for service in response.get('services', [])]
