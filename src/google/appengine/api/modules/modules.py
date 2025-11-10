@@ -177,10 +177,7 @@ def get_modules():
     appId = os.environ.get('GAE_APPLICATION')
     project = appId.split('~', 1)[1]
   parent = 'apps/' + project
-  creds, _ = google.auth.default()
-  http = requests.AuthorizedSession(creds)
-  http.headers.update({'User-Agent': 'appengine-sdk-modules-api/1.0'})
-  client = discovery.build('appengine', 'v1', http=http)
+  client = discovery.build('appengine', 'v1')
   request = client.apps().services().list(appsId=project)
   response = request.execute()
   
