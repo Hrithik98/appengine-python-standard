@@ -171,7 +171,7 @@ def get_modules():
     TransientError: If there is an issue fetching the information.
   """
   project_id = _get_project_id()
-  http_client = httplib2.Http()
+  http_client = httplib2.Http(timeout=60)
   http_client = http.set_user_agent(http_client, "appengine-modules-api-python-client")
   credentials,_ = google.auth.default()
   authorized_http = AuthorizedHttp(credentials, http=http_client)
