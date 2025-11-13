@@ -172,7 +172,7 @@ def get_modules():
   project_id = _get_project_id()
   http_client = httplib2.Http()
   http_client = http.set_user_agent(http_client, "appengine-modules-api-python-client")
-  credentials = google.auth.default()
+  credentials,_ = google.auth.default()
   authorized_http = credentials.authorize(http_client)
   client = discovery.build('appengine', 'v1', http=authorized_http)
   request = client.apps().services().list(appsId=project_id)
