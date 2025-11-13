@@ -1,19 +1,3 @@
-#!/usr/bin/env python
-#
-# Copyright 2007 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
 """Exposes methods to control services (modules) and versions of an app.
 
 Services were formerly known as modules and the API methods still
@@ -21,6 +5,18 @@ reflect that naming. For more information and code samples, see
 Using the Modules guide:
 https://cloud.google.com/appengine/docs/standard/python/using-the-modules-api.
 """
+
+import logging
+import os
+import threading
+
+from google.appengine.api import apiproxy_stub_map
+from google.appengine.api.modules import modules_service_pb2
+from google.appengine.runtime import apiproxy_errors
+from googleapiclient import discovery, errors, http
+import six
+import httplib2
+
 
 __all__ = [
     'Error',
@@ -46,20 +42,6 @@ __all__ = [
     'get_hostname'
 ]
 
-import logging
-import os
-import threading
-
-import six
-
-from google.appengine.api import apiproxy_stub_map
-from google.appengine.api.modules import modules_service_pb2
-from google.appengine.runtime import apiproxy_errors
-from googleapiclient import discovery
-from google.auth.transport import requests
-import google.auth
-
-
 class Error(Exception):
   """Base-class for errors in this module."""
 
@@ -83,6 +65,25 @@ class UnexpectedStateError(Error):
 class TransientError(Error):
   """A transient error was encountered, retry the operation."""
 
+def _raise_error(e):
+  # Translate HTTP errors to the exceptions expected by the API
+  if e.resp.status == 400:
+      raise InvalidInstancesError(e) from e
+  elif e.resp.status == 404:
+      raise InvalidVersionError(e) from e
+  elif e.resp.status >= 500:
+      raise TransientError(e) from e
+  else:
+      raise Error(e) from e
+
+def _get_project_id():
+  project_id = os.environ.get('GAE_PROJECT') or os.environ.get(
+      'GOOGLE_CLOUD_PROJECT'
+  )
+  if project_id is None:
+    app_id = os.environ.get('GAE_APPLICATION')
+    project_id = app_id.split('~', 1)[1]
+  return project_id
 
 def get_current_module_name():
   """Returns the module name of the current instance.
@@ -124,43 +125,34 @@ def get_current_instance_id():
   return os.environ.get('GAE_INSTANCE') or os.environ.get('INSTANCE_ID', None)
 
 
-def _GetRpc():
-  return apiproxy_stub_map.UserRPC('modules')
+class _ThreadedRpc:
+  """A class to emulate the UserRPC object for threaded operations."""
 
+  def __init__(self, target):
+    self.thread = threading.Thread(target=self._run_target, args=(target,))
+    self.exception = None
+    self.done = threading.Event()
+    self.thread.start()
 
-def _MakeAsyncCall(method, request, response, get_result_hook):
-  rpc = _GetRpc()
-  rpc.make_call(method, request, response, get_result_hook)
-  return rpc
+  def _run_target(self, target):
+    try:
+        target()
+    except Exception as e:
+        self.exception = e
+    finally:
+        self.done.set()
 
+  def wait(self):
+    self.done.wait()
 
-_MODULE_SERVICE_ERROR_MAP = {
-    modules_service_pb2.ModulesServiceError.INVALID_INSTANCES:
-        InvalidInstancesError,
-    modules_service_pb2.ModulesServiceError.INVALID_MODULE:
-        InvalidModuleError,
-    modules_service_pb2.ModulesServiceError.INVALID_VERSION:
-        InvalidVersionError,
-    modules_service_pb2.ModulesServiceError.TRANSIENT_ERROR:
-        TransientError,
-    modules_service_pb2.ModulesServiceError.UNEXPECTED_STATE:
-        UnexpectedStateError
-}
+  def check_success(self):
+    if self.exception:
+      raise self.exception
 
-
-def _CheckAsyncResult(rpc, expected_application_errors,
-                      ignored_application_errors):
-  try:
-    rpc.check_success()
-  except apiproxy_errors.ApplicationError as e:
-    if e.application_error in ignored_application_errors:
-      logging.info(ignored_application_errors.get(e.application_error))
-      return
-    if e.application_error in expected_application_errors:
-      mapped_error = _MODULE_SERVICE_ERROR_MAP.get(e.application_error)
-      if mapped_error:
-        raise mapped_error()
-    raise Error(e)
+  def get_result(self):
+    self.wait()
+    self.check_success()
+    return None
 
 
 def get_modules():
@@ -171,19 +163,25 @@ def get_modules():
       application.  The 'default' module will be included if it exists, as will
       the name of the module that is associated with the instance that calls
       this function.
+
+  Raises:
+    Error: If the configured project ID is invalid.
+    TransientError: If there is an issue fetching the information.
   """
-  project = os.environ.get('GAE_PROJECT') or os.environ.get('GOOGLE_CLOUD_PROJECT')
-  if project is None:
-    appId = os.environ.get('GAE_APPLICATION')
-    project = appId.split('~', 1)[1]
-  parent = 'apps/' + project
-  client = discovery.build('appengine', 'v1')
-  request = client.apps().services().list(appsId=project)
-  request.headers['X-Goog-Api-Client'] = 'appengine-modules-api-python-client'
-  response = request.execute()
-  
+  project_id = _get_project_id()
+  http_client = httplib2.Http()
+  http_client = http.set_user_agent(http_client, "appengine-modules-api-python-client")
+  authorized_http = credentials.authorize(http_client)
+  client = discovery.build('appengine', 'v1', http=authorized_http)
+  request = client.apps().services().list(appsId=project_id)
+  try:
+    response = request.execute()
+  except errors.HttpError as e:
+    if e.resp.status == 404:
+      raise Error(f"Project '{project_id}' not found.") from e
+    _raise_error(e)
+
   return [service['id'] for service in response.get('services', [])]
-  
 
 
 def get_versions(module=None):
@@ -201,17 +199,22 @@ def get_versions(module=None):
     `InvalidModuleError` if the given module isn't valid, `TransientError` if
     there is an issue fetching the information.
   """
+
   if not module:
     module = os.environ.get('GAE_SERVICE', 'default')
-  project = os.environ.get('GAE_PROJECT') or os.environ.get('GOOGLE_CLOUD_PROJECT')
-  if project is None:
-    appId = os.environ.get('GAE_APPLICATION')
-    project = appId.split('~', 1)[1]
+
+  project_id = _get_project_id()
   client = discovery.build('appengine', 'v1')
   request = client.apps().services().versions().list(
-      appsId=project, servicesId=module, view='FULL')
-  response = request.execute()
-  
+      appsId=project_id, servicesId=module, view='FULL'
+  )
+  try:
+    response = request.execute()
+  except errors.HttpError as e:
+    if e.resp.status == 404:
+      raise InvalidModuleError(f"Module '{module}' not found.") from e
+    _raise_error(e)
+
   return [version['id'] for version in response.get('versions', [])]
 
 
@@ -229,36 +232,42 @@ def get_default_version(module=None):
     `InvalidModuleError` if the given module is not valid, `InvalidVersionError`
     if no default version could be found.
   """
+
   if not module:
     module = os.environ.get('GAE_SERVICE', 'default')
-  project = os.environ.get('GAE_PROJECT') or os.environ.get('GOOGLE_CLOUD_PROJECT')
-  if project is None:
-    appId = os.environ.get('GAE_APPLICATION')
-    project = appId.split('~', 1)[1]
+  project = _get_project_id()
   client = discovery.build('appengine', 'v1')
   request = client.apps().services().get(
     appsId=project, servicesId=module)
-    
-  response = request.execute()
-  
+
+  try:
+    response = request.execute()
+  except errors.HttpError as e:
+    if e.resp.status == 404:
+        raise InvalidModuleError(f"Module '{module}' not found.") from e
+    _raise_error(e)
+
   allocations = response.get('split', {}).get('allocations')
   maxAlloc = -1
   retVersion = None
-  for version, allocation in allocations.items() : 
-    if allocation == 1.0:
-      retVersion = version
-      break
-    
-    if allocation > maxAlloc : 
-      retVersion = version
-      maxAlloc = allocation
-    elif allocation == maxAlloc:
-      if version < retVersion:
+
+  if allocations:
+    for version, allocation in allocations.items():
+      if allocation == 1.0:
         retVersion = version
-  
+        break
+
+      if allocation > maxAlloc:
+        retVersion = version
+        maxAlloc = allocation
+      elif allocation == maxAlloc:
+        if version < retVersion:
+          retVersion = version
+
+  if retVersion is None:
+    raise InvalidVersionError(f"Could not determine default version for module '{module}'.")
+
   return retVersion
-  
-  
 
 
 def get_num_instances(
@@ -287,25 +296,34 @@ def get_num_instances(
 
   if module is None:
     module = get_current_module_name()
-    
+
   if version is None:
     version = get_current_version_name()
-    
-  project = os.environ.get('GAE_PROJECT') or os.environ.get('GOOGLE_CLOUD_PROJECT')
-  if project is None:
-    appId = os.environ.get('GAE_APPLICATION')
-    project = appId.split('~', 1)[1]
-    
+
+  project_id = _get_project_id()
+
   client = discovery.build('appengine', 'v1')
   request = client.apps().services().versions().get(
-        appsId=project, servicesId=module, versionsId=version)
-        
-  response = request.execute()
+        appsId=project_id, servicesId=module, versionsId=version)
+
+  try:
+    response = request.execute()
+  except errors.HttpError as e:
+    _raise_error(e)
+
   if 'manualScaling' in response:
       return response['manualScaling'].get('instances')
-  
+
   return 0
 
+def _admin_api_version_patch(project_id, module, version, body, update_mask):
+  client = discovery.build('appengine', 'v1')
+  client.apps().services().versions().patch(
+    appsId=project_id,
+    servicesId=module,
+    versionsId=version,
+    updateMask=update_mask,
+    body=body).execute()
 
 def set_num_instances(
     instances,
@@ -333,80 +351,41 @@ def set_num_instances_async(
     instances,
     module=None,
     version=None):
-    """Returns a `UserRPC` to set the number of instances on the module version.
+  """Returns a `UserRPC` to set the number of instances on the module version.
 
-    Args:
-      instances: The number of instances to set.
-      module: The module to set the number of instances for, if `None` the current
-        module will be used.
-      version: The version set the number of instances for, if `None` the current
-        version will be used.
+  Args:
+    instances: The number of instances to set.
+    module: The module to set the number of instances for, if `None` the current
+      module will be used.
+    version: The version set the number of instances for, if `None` the current
+      version will be used.
 
-    Returns:
-      A `UserRPC` to set the number of instances on the module version.
-    """
+  Returns:
+    A `UserRPC` to set the number of instances on the module version.
+  """
 
-    class _ThreadedRpc:
-        """A class to emulate the UserRPC object for threaded operations."""
+  if not isinstance(instances, six.integer_types):
+    raise TypeError("'instances' arg must be of type long or int.")
 
-        def __init__(self, target):
-            self.thread = threading.Thread(target=self._run_target, args=(target,))
-            self.exception = None
-            self.done = threading.Event()
-            self.thread.start()
+  project_id = _get_project_id()
+  if module is None:
+    module = get_current_module_name()
+  if version is None:
+    version = get_current_version_name()
 
-        def _run_target(self, target):
-            try:
-                target()
-            except Exception as e:
-                self.exception = e
-            finally:
-                self.done.set()
+  def run_request():
+    """This function will be executed in a separate thread."""
+    try:
+      body = {
+        'manualScaling': {
+          'instances': instances
+          }
+        }
+      _admin_api_version_patch(project_id, module, version, body, 'manualScaling.instances')
+    except errors.HttpError as e:
+      _raise_error(e)
 
-        def get_result(self):
-          self.done.wait()
-          if self.exception:
-                # Re-raise the exception caught in the thread
-                raise self.exception
-
-    if not isinstance(instances, six.integer_types):
-        raise TypeError("'instances' arg must be of type long or int.")
-
-    project_id = os.environ.get('GAE_APPLICATION', '').split('~')[-1]
-    if module is None:
-        module = get_current_module_name()
-    if version is None:
-        version = get_current_version_name()
-
-    def run_request():
-        """This function will be executed in a separate thread."""
-        try:
-            client = discovery.build('appengine', 'v1')
-            body = {
-                'manualScaling': {
-                    'instances': instances
-                }
-            }
-            update_mask = 'manualScaling.instances'
-            client.apps().services().versions().patch(
-                appsId=project_id,
-                servicesId=module,
-                versionsId=version,
-                updateMask=update_mask,
-                body=body).execute()
-        except discovery.HttpError as e:
-            # Translate HTTP errors to the exceptions expected by the API
-            if e.resp.status == 400:
-                raise InvalidInstancesError(e) from e
-            elif e.resp.status == 404:
-                raise InvalidVersionError(e) from e
-            elif e.resp.status >= 500:
-                raise TransientError(e) from e
-            else:
-                raise Error(e) from e
-
-    return _ThreadedRpc(target=run_request)
-
+  return _ThreadedRpc(target=run_request)
 
 def start_version(module, version):
   """Start all instances for the given version of the module.
@@ -423,69 +402,35 @@ def start_version(module, version):
   rpc.get_result()
 
 
-def start_version_async(module, version):
-    """Returns a `UserRPC` to start the module version.
+def start_version_async(
+    module,
+    version):
+  """Returns a `UserRPC` to start all instances for the given module version.
 
-    Args:
-      module: The module to start.
-      version: The version to start.
+  Args:
+    module: String containing the name of the module to affect.
+    version: String containing the name of the version of the module to start.
 
-    Returns:
-      A `UserRPC` to start the module version.
-    """
+  Returns:
+    A `UserRPC` to start all instances for the given module version.
+  """
+  if module is None:
+    module = get_current_module_name()
 
-    class _ThreadedRpc:
-        """A class to emulate the UserRPC object for threaded operations."""
+  if version is None:
+    version = get_current_version_name()
+  project_id = _get_project_id()
+  def run_request():
+    """This function will be executed in a separate thread."""
+    try:
+      body = {
+        'servingStatus': 'SERVING'
+        }
+      _admin_api_version_patch(project_id, module, version, body, 'servingStatus')
+    except errors.HttpError as e:
+      _raise_error(e)
 
-        def __init__(self, target):
-            self.thread = threading.Thread(target=self._run_target, args=(target,))
-            self.exception = None
-            self.done = threading.Event()
-            self.thread.start()
-
-        def _run_target(self, target):
-            try:
-                target()
-            except Exception as e:
-                self.exception = e
-            finally:
-                self.done.set()
-
-        def wait(self):
-            self.done.wait()
-
-        def check_success(self):
-            if self.exception:
-                raise self.exception
-
-        def get_result(self):
-            self.wait()
-            self.check_success()
-            return None
-
-    project_id = os.environ.get('GAE_APPLICATION', '').split('~')[-1]
-
-    def run_request():
-        """This function will be executed in a separate thread."""
-        try:
-            client = discovery.build('appengine', 'v1')
-            body = {'servingStatus': 'SERVING'}
-            update_mask = 'servingStatus'
-            client.apps().services().versions().patch(
-                appsId=project_id,
-                servicesId=module,
-                versionsId=version,
-                updateMask=update_mask,
-                body=body).execute()
-        except discovery.HttpError as e:
-            if e.resp.status == 404:
-                raise InvalidVersionError(e) from e
-            elif e.resp.status >= 500:
-                raise TransientError(e) from e
-            else:
-                raise Error(e) from e
-
-    return _ThreadedRpc(target=run_request)
+  return _ThreadedRpc(target=run_request)
 
 
 def stop_version(
@@ -506,69 +451,47 @@ def stop_version(
   rpc.get_result()
 
 
-def stop_version_async(module, version):
-    """Returns a `UserRPC` to stop the module version.
+def stop_version_async(
+    module=None,
+    version=None):
+  """Returns a `UserRPC` to stop all instances for the given module version.
 
-    Args:
-      module: The module to stop.
-      version: The version to stop.
+  Args:
+    module: The module to affect, if `None` the current module is used.
+    version: The version of the given module to affect, if `None` the current
+      version is used.
 
-    Returns:
-      A `UserRPC` to stop the module version.
-    """
-    class _ThreadedRpc:
-        """A class to emulate the UserRPC object for threaded operations."""
+  Returns:
+    A `UserRPC` to stop all instances for the given module version.
+  """
+  if module is None:
+    module = get_current_module_name()
 
-        def __init__(self, target):
-            self.thread = threading.Thread(target=self._run_target, args=(target,))
-            self.exception = None
-            self.done = threading.Event()
-            self.thread.start()
+  if version is None:
+    version = get_current_version_name()
+  project_id = _get_project_id()
+  def run_request():
+    """This function will be executed in a separate thread."""
+    try:
+      body = {
+        'servingStatus': 'STOPPED'
+        }
+      _admin_api_version_patch(project_id, module, version, body, 'servingStatus')
+    except errors.HttpError as e:
+      _raise_error(e)
 
-        def _run_target(self, target):
-            try:
-                target()
-            except Exception as e:
-                self.exception = e
-            finally:
-                self.done.set()
+  return _ThreadedRpc(target=run_request)
 
-        def wait(self):
-            self.done.wait()
+def _construct_hostname(instance, version, module, default_hostname):
+  """Constructs a hostname for the given module, version, and instance."""
+  hostname_parts = []
+  if instance:
+    hostname_parts.append(instance)
+  hostname_parts.append(version)
+  hostname_parts.append(module)
+  hostname_parts.append(default_hostname)
 
-        def check_success(self):
-            if self.exception:
-                raise self.exception
-
-        def get_result(self):
-            self.wait()
-            self.check_success()
-            return None
-
-    project_id = os.environ.get('GAE_APPLICATION', '').split('~')[-1]
-
-    def run_request():
-        """This function will be executed in a separate thread."""
-        try:
-            client = discovery.build('appengine', 'v1')
-            body = {'servingStatus': 'STOPPED'}
-            update_mask = 'servingStatus'
-            client.apps().services().versions().patch(
-                appsId=project_id,
-                servicesId=module,
-                versionsId=version,
-                updateMask=update_mask,
-                body=body).execute()
-        except discovery.HttpError as e:
-            if e.resp.status == 404:
-                raise InvalidVersionError(e) from e
-            elif e.resp.status >= 500:
-                raise TransientError(e) from e
-            else:
-                raise Error(e) from e
-
-    return _ThreadedRpc(target=run_request)
-
+  return ".".join(hostname_parts)
 
 def get_hostname(
     module=None,
@@ -597,87 +520,15 @@ def get_hostname(
 
   if module is None:
     module = get_current_module_name()
-    
+
   if version is None:
     version = get_current_version_name()
-  
-  project = os.environ.get('GAE_PROJECT') or os.environ.get('GOOGLE_CLOUD_PROJECT')
-  if project is None:
-    appId = os.environ.get('GAE_APPLICATION')
-    project = appId.split('~', 1)[1]
-  
+
+  project = _get_project_id()
+
   client = discovery.build('appengine', 'v1')
   request = client.apps().get(appsId=project)
   response = request.execute()
   default_hostname = response.get('defaultHostname')
-  
-  hostname_parts = []
-  if instance:
-    hostname_parts.append(instance)
-  hostname_parts.append(version)
-  hostname_parts.append(module)
-  hostname_parts.append(default_hostname)
 
-  return ".".join(hostname_parts)
-  
-  
-def get_current_region():
-  """
-  Dynamically determines the current GCP region by querying the metadata service.
-  This is the most reliable way to get the region from within a GCP environment.
-
-  Returns:
-      str: The GCP region (e.g., 'us-central1'), or None if not found.
-  """
-  try:
-    # google-auth can automatically fetch the project ID and other metadata
-    # in a GCP environment. We can get the region from the instance metadata.
-    scoped_credentials, _ = google.auth.default(
-        scopes=['https://www.googleapis.com/auth/cloud-platform'])
-
-    # The request object is needed to make authenticated calls
-    authed_session = requests.AuthorizedSession(scoped_credentials)
-
-    # The metadata server URL for the instance's zone
-    metadata_url = 'http://metadata.google.internal/computeMetadata/v1/instance/zone'
-    metadata_response = authed_session.get(
-        metadata_url,
-        headers={'Metadata-Flavor': 'Google'}
-    )
-    metadata_response.raise_for_status() # Raises an HTTPError for bad responses
-
-    # The response is in the format 'projects/PROJECT_NUM/zones/ZONE'.
-    # We extract the zone (e.g., 'us-central1-a').
-    zone = metadata_response.text.split('/')[-1]
-        
-    # The region is the zone without the final letter.
-    return zone[:-2]
-
-  except Exception:
-    return None
-    
-def create_regional_admin_client():
-  """
-  Creates an App Engine Admin API client configured for the region
-  where the code is currently running.
-
-  Returns:
-      A Google API client resource object for the current region, or a global
-      client if the region cannot be determined.
-  """
-  region = get_current_region()
-
-  if not region:
-    print("Warning: Could not determine region. Falling back to global endpoint.")
-    return AppEngineAdminClient()
-
-  print(f"Detected region: {region}. Creating regional client.")
-
-  # The regional endpoint format for the App Engine Admin API
-  regional_endpoint = f'https://{region}-appengine.googleapis.com'
-  
-  client_opts = ClientOptions(api_endpoint=regional_endpoint)
-
-  # Build the service object, passing the regional endpoint URL
-  admin_api_client = AppEngineAdminClient(client_options=client_options)
-  return admin_api_client
+  return _construct_hostname(instance, version, module, default_hostname)
