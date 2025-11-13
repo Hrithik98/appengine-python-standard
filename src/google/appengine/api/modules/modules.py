@@ -19,6 +19,8 @@ import google.auth
 import six
 import httplib2
 
+httplib2.debuglevel = 1
+
 
 __all__ = [
     'Error',
