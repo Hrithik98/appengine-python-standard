@@ -14,6 +14,7 @@ from google.appengine.api import apiproxy_stub_map
 from google.appengine.api.modules import modules_service_pb2
 from google.appengine.runtime import apiproxy_errors
 from googleapiclient import discovery, errors, http
+from google_auth_httplib2 import AuthorizedHttp
 import google.auth
 import six
 import httplib2
@@ -173,7 +174,7 @@ def get_modules():
   http_client = httplib2.Http()
   http_client = http.set_user_agent(http_client, "appengine-modules-api-python-client")
   credentials,_ = google.auth.default()
-  authorized_http = credentials.authorize(http_client)
+  authorized_http = AuthorizedHttp(credentials, http=http_client)
   client = discovery.build('appengine', 'v1', http=authorized_http)
   request = client.apps().services().list(appsId=project_id)
   try:
