@@ -515,7 +515,7 @@ def get_hostname(
 
   try:
     # Get the application's services to check for the legacy "no-engine" case.
-    services = self.get_modules()
+    services = get_modules()
 
     # Get the application's default hostname
     request = client.apps().get(appsId=project_id)
@@ -572,7 +572,7 @@ def get_hostname(
   if version is None:
     try:
         # Get all versions for the target module.
-        versions_list = self.get_versions(module=req_module)
+        versions_list = get_versions(module=req_module)
 
         # Create a set of version IDs for efficient lookup.
         existing_version_ids = {v['id'] for v in versions_list}
