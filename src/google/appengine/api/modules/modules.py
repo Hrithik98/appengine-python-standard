@@ -13,11 +13,8 @@ import threading
 from google.appengine.api import apiproxy_stub_map
 from google.appengine.api.modules import modules_service_pb2
 from google.appengine.runtime import apiproxy_errors
-from googleapiclient import discovery, errors, http
-from google_auth_httplib2 import AuthorizedHttp
-import google.auth
+from googleapiclient import discovery, errors
 import six
-import httplib2
 
 httplib2.debuglevel = 1
 
@@ -173,11 +170,7 @@ def get_modules():
     TransientError: If there is an issue fetching the information.
   """
   project_id = _get_project_id()
-  http_client = httplib2.Http(timeout=60)
-  http_client = http.set_user_agent(http_client, "appengine-modules-api-python-client")
-  credentials,_ = google.auth.default()
-  authorized_http = AuthorizedHttp(credentials, http=http_client)
-  client = discovery.build('appengine', 'v1', http=authorized_http)
+  client = discovery.build('appengine', 'v1')
   request = client.apps().services().list(appsId=project_id)
   try:
     response = request.execute()
@@ -487,15 +480,8 @@ def stop_version_async(
 
   return _ThreadedRpc(target=run_request)
 
-def _construct_hostname(instance, version, module, default_hostname):
+def _construct_hostname(*hostname_parts):
   """Constructs a hostname for the given module, version, and instance."""
-  hostname_parts = []
-  if instance:
-    hostname_parts.append(instance)
-  hostname_parts.append(version)
-  hostname_parts.append(module)
-  hostname_parts.append(default_hostname)
-
   return ".".join(hostname_parts)
 
 def get_hostname(
@@ -523,17 +509,91 @@ def get_hostname(
     TypeError: if the given instance type is invalid.
   """
 
-  if module is None:
-    module = get_current_module_name()
+  if client is None:
+    client = discovery.build('appengine', 'v1')
 
+  project_id = _get_project_id()
+
+  req_module = module or get_current_module_name()
+  # If version is not specified, we will use the version of the current context.
+  req_version = version or get_current_version_name()
+
+  try:
+    # Get the application's services to check for the legacy "no-engine" case.
+    services = self.get_modules()
+
+    # Get the application's default hostname
+    request = client.apps().get(appsId=project_id)
+    response = request.execute()
+    default_hostname = response.get('defaultHostname')
+
+  except errors.HttpError as e:
+    _raise_error(e)
+
+  # Legacy Applications (Without "Engines")
+  if len(services) == 1 and services[0]['id'] == 'default':
+    if req_module != 'default':
+      raise InvalidModuleError(f"Module '{req_module}' not found.")
+    hostname_parts = [req_version, default_hostname]
+    if instance:
+      return _construct_hostname(instance, req_version, default_hostname)
+    return _construct_hostname(req_version, default_hostname)
+
+  # --- Cases for modern applications with one or more services ---
+
+  if instance is not None:
+    # Request for a specific instance
+    try:
+      instance_id = int(instance)
+      if instance_id < 0:
+        raise ValueError
+    except (ValueError, TypeError) as e:
+      raise InvalidInstancesError("Instance must be a non-negative integer.") from e
+
+    try:
+      # Get version details to check scaling and instance count
+      request = client.apps().services().versions().get(
+          appsId=project_id, servicesId=req_module, versionsId=req_version, view='FULL')
+      version_details = request.execute()
+
+      if 'manualScaling' not in version_details:
+        raise InvalidInstancesError(
+            "Instance-specific hostnames are only available for manually scaled services.")
+
+      num_instances = version_details['manualScaling'].get('instances', 0)
+      if instance_id >= num_instances:
+        raise InvalidInstancesError(
+            "The specified instance does not exist for this module/version.")
+
+      return _construct_hostname(instance, req_version, req_module, default_hostname)
+
+    except errors.HttpError as e:
+      if e.resp.status == 404:
+        raise InvalidModuleError(
+            f"Module '{req_module}' or version '{req_version}' not found.") from e
+      _raise_error(e)
+
+  # Request with no explicit version and no instance.
   if version is None:
-    version = get_current_version_name()
+    try:
+        # Get all versions for the target module.
+        versions_list = self.get_versions(module=req_module)
 
-  project = _get_project_id()
+        # Create a set of version IDs for efficient lookup.
+        existing_version_ids = {v['id'] for v in versions_list}
 
-  client = discovery.build('appengine', 'v1')
-  request = client.apps().get(appsId=project)
-  response = request.execute()
-  default_hostname = response.get('defaultHostname')
+        # Check if the version from the current context exists in the target module.
+        if req_version in existing_version_ids:
+            return _construct_hostname(req_version, req_module, default_hostname)
+        else:
+            # If the current version does not exist on the target module,
+            # return a hostname without a version.
+            return _construct_hostname(req_module, default_hostname)
 
-  return _construct_hostname(instance, version, module, default_hostname)
+    except errors.HttpError as e:
+        if e.resp.status == 404:
+            raise InvalidModuleError(f"Module '{req_module}' not found.") from e
+        _raise_error(e)
+
+  # Request with a version but no instance
+  return _construct_hostname(version, req_module, default_hostname)
