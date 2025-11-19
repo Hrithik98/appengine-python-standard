@@ -506,9 +506,6 @@ def get_hostname(
     TypeError: if the given instance type is invalid.
   """
 
-  if client is None:
-    client = discovery.build('appengine', 'v1')
-
   project_id = _get_project_id()
 
   req_module = module or get_current_module_name()
