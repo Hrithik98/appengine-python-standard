@@ -16,9 +16,6 @@ from google.appengine.runtime import apiproxy_errors
 from googleapiclient import discovery, errors
 import six
 
-httplib2.debuglevel = 1
-
-
 __all__ = [
     'Error',
     'InvalidModuleError',
