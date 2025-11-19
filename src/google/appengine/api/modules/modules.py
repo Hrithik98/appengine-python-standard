@@ -507,7 +507,8 @@ def get_hostname(
   """
 
   project_id = _get_project_id()
-
+  client = discovery.build('appengine', 'v1')
+  
   req_module = module or get_current_module_name()
   # If version is not specified, we will use the version of the current context.
   req_version = version or get_current_version_name()
