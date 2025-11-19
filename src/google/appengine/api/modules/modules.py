@@ -575,7 +575,7 @@ def get_hostname(
         versions_list = get_versions(module=req_module)
 
         # Create a set of version IDs for efficient lookup.
-        existing_version_ids = {v['id'] for v in versions_list}
+        existing_version_ids = set(versions_list)
 
         # Check if the version from the current context exists in the target module.
         if req_version in existing_version_ids:
