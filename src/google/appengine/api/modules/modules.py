@@ -505,10 +505,23 @@ def get_hostname(
     InvalidInstancesError: if the given instance value is invalid.
     TypeError: if the given instance type is invalid.
   """
+  #
+  # START FIX: Validate instance parameter at the beginning of the function.
+  #
+  if instance is not None:
+    try:
+      instance_id = int(instance)
+      if instance_id < 0:
+        raise ValueError
+    except (ValueError, TypeError) as e:
+      raise InvalidInstancesError("Instance must be a non-negative integer.") from e
+  #
+  # END FIX
+  #
 
   project_id = _get_project_id()
   client = discovery.build('appengine', 'v1')
-  
+
   req_module = module or get_current_module_name()
   # If version is not specified, we will use the version of the current context.
   req_version = version or get_current_version_name()
@@ -526,7 +539,7 @@ def get_hostname(
     _raise_error(e)
 
   # Legacy Applications (Without "Engines")
-  if len(services) == 1 and services[0]['id'] == 'default':
+  if len(services) == 1 and services[0] == 'default':
     if req_module != 'default':
       raise InvalidModuleError(f"Module '{req_module}' not found.")
     hostname_parts = [req_version, default_hostname]
@@ -539,13 +552,6 @@ def get_hostname(
   if instance is not None:
     # Request for a specific instance
     try:
-      instance_id = int(instance)
-      if instance_id < 0:
-        raise ValueError
-    except (ValueError, TypeError) as e:
-      raise InvalidInstancesError("Instance must be a non-negative integer.") from e
-
-    try:
       # Get version details to check scaling and instance count
       request = client.apps().services().versions().get(
           appsId=project_id, servicesId=req_module, versionsId=req_version, view='FULL')
@@ -556,7 +562,7 @@ def get_hostname(
             "Instance-specific hostnames are only available for manually scaled services.")
 
       num_instances = version_details['manualScaling'].get('instances', 0)
-      if instance_id >= num_instances:
+      if int(instance) >= num_instances:
         raise InvalidInstancesError(
             "The specified instance does not exist for this module/version.")
 
@@ -592,3 +598,4 @@ def get_hostname(
 
   # Request with a version but no instance
   return _construct_hostname(version, req_module, default_hostname)
+

@@ -465,21 +465,201 @@ class ModulesTest(absltest.TestCase):
     with self.assertRaises(modules.Error):
         modules.stop_version()
 
-  # --- Tests for get_hostname (intentionally left incomplete) ---
+   # --- Tests for get_hostname ---
 
-  def testGetHostname(self):
-    # This test verifies the current non-error-handled behavior of get_hostname
+  def testGetHostname_WithVersion_NoInstance(self):
+    """Tests the simple case with an explicit module and version."""
     self._SetupAdminApiMocks()
-    mock_apps = self.mox.CreateMockAnything()
-    mock_request = self.mox.CreateMockAnything()
-    self.mock_admin_api_client.apps().AndReturn(mock_apps)
-    mock_apps.get(appsId='project').AndReturn(mock_request)
-    mock_request.execute().AndReturn(
-        {'defaultHostname': 'project.appspot.com'})
-    self.mox.ReplayAll()
-    self.assertEqual('i.v1.default.project.appspot.com',
-                     modules.get_hostname(instance='i'))
+    self.mox.StubOutWithMock(modules, 'get_modules')
 
+    mock_apps = self.mox.CreateMockAnything()
+    mock_get_request = self.mox.CreateMockAnything()
+
+    self.mock_admin_api_client.apps().AndReturn(mock_apps)
+    modules.get_modules().AndReturn(['default', 'other'])
+    mock_apps.get(appsId='project').AndReturn(mock_get_request)
+    mock_get_request.execute().AndReturn(
+        {'defaultHostname': 'project.appspot.com'})
+
+    self.mox.ReplayAll()
+    self.assertEqual('v2.foo.project.appspot.com',
+                     modules.get_hostname(module='foo', version='v2'))
+
+  def testGetHostname_Instance_Success(self):
+    """Tests a successful request for a specific instance."""
+    self._SetupAdminApiMocks()
+    self.mox.StubOutWithMock(modules, 'get_modules')
+
+    mock_apps = self.mox.CreateMockAnything()
+    mock_services = self.mox.CreateMockAnything()
+    mock_versions = self.mox.CreateMockAnything()
+    mock_get_request = self.mox.CreateMockAnything()
+    mock_version_request = self.mox.CreateMockAnything()
+
+    # Expect first call to .apps()
+    self.mock_admin_api_client.apps().AndReturn(mock_apps)
+    modules.get_modules().AndReturn(['default', 'other'])
+    mock_apps.get(appsId='project').AndReturn(mock_get_request)
+    mock_get_request.execute().AndReturn(
+        {'defaultHostname': 'project.appspot.com'})
+
+    # Expect second call to .apps()
+    self.mock_admin_api_client.apps().AndReturn(mock_apps)
+    mock_apps.services().AndReturn(mock_services)
+    mock_services.versions().AndReturn(mock_versions)
+    mock_versions.get(
+        appsId='project', servicesId='default', versionsId='v1',
+        view='FULL').AndReturn(mock_version_request)
+    mock_version_request.execute().AndReturn(
+        {'manualScaling': {'instances': 5}})
+
+    self.mox.ReplayAll()
+    self.assertEqual('2.v1.default.project.appspot.com',
+                     modules.get_hostname(instance='2'))
+
+  def testGetHostname_Instance_NoManualScaling(self):
+    """Tests instance request for a service without manual scaling."""
+    self._SetupAdminApiMocks()
+    self.mox.StubOutWithMock(modules, 'get_modules')
+
+    mock_apps = self.mox.CreateMockAnything()
+    mock_services = self.mox.CreateMockAnything()
+    mock_versions = self.mox.CreateMockAnything()
+    mock_get_request = self.mox.CreateMockAnything()
+    mock_version_request = self.mox.CreateMockAnything()
+
+    # Expect first call to .apps()
+    self.mock_admin_api_client.apps().AndReturn(mock_apps)
+    modules.get_modules().AndReturn(['default', 'other'])
+    mock_apps.get(appsId='project').AndReturn(mock_get_request)
+    mock_get_request.execute().AndReturn(
+        {'defaultHostname': 'project.appspot.com'})
+        
+    # Expect second call to .apps()
+    self.mock_admin_api_client.apps().AndReturn(mock_apps)
+    mock_apps.services().AndReturn(mock_services)
+    mock_services.versions().AndReturn(mock_versions)
+    mock_versions.get(
+        appsId='project', servicesId='default', versionsId='v1',
+        view='FULL').AndReturn(mock_version_request)
+    mock_version_request.execute().AndReturn({'automaticScaling': {}})
+
+    self.mox.ReplayAll()
+    with self.assertRaisesRegex(
+        modules.InvalidInstancesError,
+        'Instance-specific hostnames are only available for manually scaled '
+        'services.'):
+      modules.get_hostname(instance='1')
+
+  def testGetHostname_Instance_OutOfBounds(self):
+    """Tests instance request where the instance ID is out of bounds."""
+    self._SetupAdminApiMocks()
+    self.mox.StubOutWithMock(modules, 'get_modules')
+    
+    mock_apps = self.mox.CreateMockAnything()
+    mock_services = self.mox.CreateMockAnything()
+    mock_versions = self.mox.CreateMockAnything()
+    mock_get_request = self.mox.CreateMockAnything()
+    mock_version_request = self.mox.CreateMockAnything()
+
+    # Expect first call to .apps()
+    self.mock_admin_api_client.apps().AndReturn(mock_apps)
+    modules.get_modules().AndReturn(['default', 'other'])
+    mock_apps.get(appsId='project').AndReturn(mock_get_request)
+    mock_get_request.execute().AndReturn(
+        {'defaultHostname': 'project.appspot.com'})
+        
+    # Expect second call to .apps()
+    self.mock_admin_api_client.apps().AndReturn(mock_apps)
+    mock_apps.services().AndReturn(mock_services)
+    mock_services.versions().AndReturn(mock_versions)
+    mock_versions.get(
+        appsId='project', servicesId='default', versionsId='v1',
+        view='FULL').AndReturn(mock_version_request)
+    mock_version_request.execute().AndReturn(
+        {'manualScaling': {'instances': 5}})
+
+    self.mox.ReplayAll()
+    with self.assertRaisesRegex(
+        modules.InvalidInstancesError,
+        'The specified instance does not exist for this module/version.'):
+      modules.get_hostname(instance='5')
+
+  def testGetHostname_Instance_InvalidValue(self):
+    """Tests instance request with an invalid non-integer instance value."""
+    # This test is now simpler. Because the validation happens at the very
+    # top of get_hostname, no API calls are made, so no mocks are needed.
+    with self.assertRaisesRegex(
+        modules.InvalidInstancesError,
+        'Instance must be a non-negative integer.'):
+      modules.get_hostname(instance='foo')
+
+  def testGetHostname_NoVersion_VersionExistsOnTarget(self):
+    """Tests no-version call where the current version exists on the target."""
+    self._SetupAdminApiMocks()
+    self.mox.StubOutWithMock(modules, 'get_modules')
+    self.mox.StubOutWithMock(modules, 'get_versions')
+
+    mock_apps = self.mox.CreateMockAnything()
+    mock_get_request = self.mox.CreateMockAnything()
+    
+    self.mock_admin_api_client.apps().AndReturn(mock_apps)
+    modules.get_modules().AndReturn(['default', 'module1'])
+    mock_apps.get(appsId='project').AndReturn(mock_get_request)
+    mock_get_request.execute().AndReturn(
+        {'defaultHostname': 'project.appspot.com'})
+    modules.get_versions(module='module1').AndReturn(['v1', 'v2'])
+
+    self.mox.ReplayAll()
+    self.assertEqual('v1.module1.project.appspot.com',
+                     modules.get_hostname(module='module1'))
+
+  def testGetHostname_NoVersion_VersionDoesNotExistOnTarget(self):
+    """Tests no-version call where the current version is not on the target."""
+    self._SetupAdminApiMocks()
+    self.mox.StubOutWithMock(modules, 'get_modules')
+    self.mox.StubOutWithMock(modules, 'get_versions')
+    
+    mock_apps = self.mox.CreateMockAnything()
+    mock_get_request = self.mox.CreateMockAnything()
+    
+    self.mock_admin_api_client.apps().AndReturn(mock_apps)
+    modules.get_modules().AndReturn(['default', 'module1'])
+    mock_apps.get(appsId='project').AndReturn(mock_get_request)
+    mock_get_request.execute().AndReturn(
+        {'defaultHostname': 'project.appspot.com'})
+    modules.get_versions(module='module1').AndReturn(['v2', 'v3'])
+
+    self.mox.ReplayAll()
+    self.assertEqual('module1.project.appspot.com',
+                     modules.get_hostname(module='module1'))
+
+  def testGetHostname_LegacyApp_Success(self):
+    """Tests a hostname request for a legacy app without engines."""
+    self._SetupAdminApiMocks()
+    self.mox.StubOutWithMock(modules, 'get_modules')
+    
+    mock_apps = self.mox.CreateMockAnything()
+    mock_get_request = self.mox.CreateMockAnything()
+
+    self.mock_admin_api_client.apps().AndReturn(mock_apps)
+    modules.get_modules().AndReturn(['default'])
+    mock_apps.get(appsId='project').AndReturn(mock_get_request)
+    mock_get_request.execute().AndReturn(
+        {'defaultHostname': 'project.appspot.com'})
+
+    self.mox.ReplayAll()
+    self.assertEqual('v1.project.appspot.com', modules.get_hostname())
+
+  def testGetHostname_LegacyApp_WithInstance(self):
+    """Tests a legacy app request with an invalid non-integer instance."""
+    # This test was incorrect. It should expect an error for instance='i'.
+    # Like the test above, no mocks are needed because it fails on validation
+    # before any API calls are made.
+    with self.assertRaisesRegex(
+        modules.InvalidInstancesError,
+        'Instance must be a non-negative integer.'):
+      modules.get_hostname(instance='i')
 
 if __name__ == '__main__':
   absltest.main()
