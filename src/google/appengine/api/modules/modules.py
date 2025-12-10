@@ -13,8 +13,12 @@ import threading
 from google.appengine.api import apiproxy_stub_map
 from google.appengine.api.modules import modules_service_pb2
 from google.appengine.runtime import apiproxy_errors
-from googleapiclient import discovery, errors
+from googleapiclient import discovery, errors, http
+from google_auth_httplib2 import AuthorizedHttp
+import google.auth
 import six
+import httplib2
+
 
 __all__ = [
     'Error',
@@ -62,6 +66,9 @@ class UnexpectedStateError(Error):
 
 class TransientError(Error):
   """A transient error was encountered, retry the operation."""
+
+def _has_opted_in():
+  return (os.environ.get('OPT_IN_MODULES', 'false').lower() == 'true')
 
 def _raise_error(e):
   # Translate HTTP errors to the exceptions expected by the API
@@ -153,6 +160,50 @@ class _ThreadedRpc:
     return None
 
 
+def _GetRpc():
+  return apiproxy_stub_map.UserRPC('modules')
+
+def _MakeAsyncCall(method, request, response, get_result_hook):
+  rpc = _GetRpc()
+  rpc.make_call(method, request, response, get_result_hook)
+  return rpc
+
+_MODULE_SERVICE_ERROR_MAP = {
+    modules_service_pb2.ModulesServiceError.INVALID_INSTANCES:
+        InvalidInstancesError,
+    modules_service_pb2.ModulesServiceError.INVALID_MODULE:
+        InvalidModuleError,
+    modules_service_pb2.ModulesServiceError.INVALID_VERSION:
+        InvalidVersionError,
+    modules_service_pb2.ModulesServiceError.TRANSIENT_ERROR:
+        TransientError,
+    modules_service_pb2.ModulesServiceError.UNEXPECTED_STATE:
+        UnexpectedStateError
+}
+
+def _CheckAsyncResult(rpc, expected_application_errors,
+                      ignored_application_errors):
+  try:
+    rpc.check_success()
+  except apiproxy_errors.ApplicationError as e:
+    if e.application_error in ignored_application_errors:
+      logging.info(ignored_application_errors.get(e.application_error))
+      return
+    if e.application_error in expected_application_errors:
+      mapped_error = _MODULE_SERVICE_ERROR_MAP.get(e.application_error)
+      if mapped_error:
+        raise mapped_error()
+    raise Error(e)
+
+def _get_admin_api_client_with_useragent(methodName):
+  userAgent = 'appengine-modules-api-python-client/' + methodName
+  http_client = httplib2.Http(timeout=60)
+  http_client = http.set_user_agent(http_client, userAgent)
+  credentials,_ = google.auth.default()
+  authorized_http = AuthorizedHttp(credentials, http=http_client)
+  client = discovery.build('appengine', 'v1', http=authorized_http)
+  return client
+
 def get_modules():
   """Returns a list of all modules for the application.
 
@@ -166,9 +217,13 @@ def get_modules():
     Error: If the configured project ID is invalid.
     TransientError: If there is an issue fetching the information.
   """
+  if not _has_opted_in():
+    return get_modules_legacy()
+  
   project_id = _get_project_id()
-  client = discovery.build('appengine', 'v1')
+  client = _get_admin_api_client_with_useragent('get_modules')
   request = client.apps().services().list(appsId=project_id)
+
   try:
     response = request.execute()
   except errors.HttpError as e:
@@ -177,6 +232,20 @@ def get_modules():
     _raise_error(e)
 
   return [service['id'] for service in response.get('services', [])]
+
+#Legacy get_modules implementation
+def get_modules_legacy():
+  def _ResultHook(rpc):
+    _CheckAsyncResult(rpc, [], {})
+
+
+    return rpc.response.module
+
+  request = modules_service_pb2.GetModulesRequest()
+  response = modules_service_pb2.GetModulesResponse()
+  return _MakeAsyncCall('GetModules', request, response,
+                        _ResultHook).get_result()
+
 
 
 def get_versions(module=None):
@@ -194,12 +263,14 @@ def get_versions(module=None):
     `InvalidModuleError` if the given module isn't valid, `TransientError` if
     there is an issue fetching the information.
   """
+  if not _has_opted_in():
+    return get_versions_legacy(module=module)
 
   if not module:
     module = os.environ.get('GAE_SERVICE', 'default')
-
+  
   project_id = _get_project_id()
-  client = discovery.build('appengine', 'v1')
+  client = _get_admin_api_client_with_useragent('get_versions')
   request = client.apps().services().versions().list(
       appsId=project_id, servicesId=module, view='FULL'
   )
@@ -211,6 +282,25 @@ def get_versions(module=None):
     _raise_error(e)
 
   return [version['id'] for version in response.get('versions', [])]
+
+def get_versions_legacy(module=None):
+  def _ResultHook(rpc):
+    mapped_errors = [
+        modules_service_pb2.ModulesServiceError.INVALID_MODULE,
+        modules_service_pb2.ModulesServiceError.TRANSIENT_ERROR
+    ]
+    _CheckAsyncResult(rpc, mapped_errors, {})
+
+
+    return rpc.response.version
+
+  request = modules_service_pb2.GetVersionsRequest()
+  if module:
+    request.module = module
+  response = modules_service_pb2.GetVersionsResponse()
+  return _MakeAsyncCall('GetVersions', request, response,
+                        _ResultHook).get_result()  
+
 
 
 def get_default_version(module=None):
@@ -228,10 +318,13 @@ def get_default_version(module=None):
     if no default version could be found.
   """
 
+  if not _has_opted_in():
+    return get_default_version_legacy(module=module)
+
   if not module:
     module = os.environ.get('GAE_SERVICE', 'default')
   project = _get_project_id()
-  client = discovery.build('appengine', 'v1')
+  client = _get_admin_api_client_with_useragent('get_default_version')
   request = client.apps().services().get(
     appsId=project, servicesId=module)
 
@@ -264,6 +357,22 @@ def get_default_version(module=None):
 
   return retVersion
 
+def get_default_version_legacy(module):
+  def _ResultHook(rpc):
+    mapped_errors = [
+        modules_service_pb2.ModulesServiceError.INVALID_MODULE,
+        modules_service_pb2.ModulesServiceError.INVALID_VERSION
+    ]
+    _CheckAsyncResult(rpc, mapped_errors, {})
+    return rpc.response.version
+
+  request = modules_service_pb2.GetDefaultVersionRequest()
+  if module:
+    request.module = module
+  response = modules_service_pb2.GetDefaultVersionResponse()
+  return _MakeAsyncCall('GetDefaultVersion', request, response,
+                        _ResultHook).get_result()
+
 
 def get_num_instances(
     module=None,
@@ -288,6 +397,8 @@ def get_num_instances(
   Raises:
     `InvalidVersionError` on invalid input.
   """
+  if not _has_opted_in():
+    return get_num_instances_legacy(module=module, version=version)
 
   if module is None:
     module = get_current_module_name()
@@ -296,8 +407,7 @@ def get_num_instances(
     version = get_current_version_name()
 
   project_id = _get_project_id()
-
-  client = discovery.build('appengine', 'v1')
+  client = _get_admin_api_client_with_useragent('get_num_instances')
   request = client.apps().services().versions().get(
         appsId=project_id, servicesId=module, versionsId=version)
 
@@ -310,9 +420,33 @@ def get_num_instances(
       return response['manualScaling'].get('instances')
 
   return 0
+  
+def get_num_instances_legacy(module, version):
+  def _ResultHook(rpc):
+    mapped_errors = [modules_service_pb2.ModulesServiceError.INVALID_VERSION]
+    _CheckAsyncResult(rpc, mapped_errors, {})
+    return rpc.response.instances
+
+  request = modules_service_pb2.GetNumInstancesRequest()
+  if module:
+    request.module = module
+  if version:
+    request.version = version
+  response = modules_service_pb2.GetNumInstancesResponse()
+  return _MakeAsyncCall('GetNumInstances', request, response,
+                        _ResultHook).get_result()
+
 
 def _admin_api_version_patch(project_id, module, version, body, update_mask):
-  client = discovery.build('appengine', 'v1')
+  methodName = ''
+  if 'manualScaling' in body:
+    methodName = 'set_num_instances'
+  elif 'servingStatus' in body and body['servingStatus'] == 'SERVING':
+    methodName = 'start_version'
+  elif 'servingStatus' in body and body['servingStatus'] == 'STOPPED':
+    methodName = 'stop_version'
+
+  client = _get_admin_api_client_with_useragent(methodName)
   client.apps().services().versions().patch(
     appsId=project_id,
     servicesId=module,
@@ -359,6 +493,9 @@ def set_num_instances_async(
     A `UserRPC` to set the number of instances on the module version.
   """
 
+  if not _has_opted_in():
+    return set_num_instances_async_legacy(instances=instances, module=module, version=version)
+
   if not isinstance(instances, six.integer_types):
     raise TypeError("'instances' arg must be of type long or int.")
 
@@ -381,6 +518,26 @@ def set_num_instances_async(
       _raise_error(e)
 
   return _ThreadedRpc(target=run_request)
+
+def set_num_instances_async_legacy(instances, module, version):
+  def _ResultHook(rpc):
+    mapped_errors = [
+        modules_service_pb2.ModulesServiceError.INVALID_VERSION,
+        modules_service_pb2.ModulesServiceError.TRANSIENT_ERROR
+    ]
+    _CheckAsyncResult(rpc, mapped_errors, {})
+
+  if not isinstance(instances, six.integer_types):
+    raise TypeError("'instances' arg must be of type long or int.")
+  request = modules_service_pb2.SetNumInstancesRequest()
+  request.instances = instances
+  if module:
+    request.module = module
+  if version:
+    request.version = version
+  response = modules_service_pb2.SetNumInstancesResponse()
+  return _MakeAsyncCall('SetNumInstances', request, response, _ResultHook)
+
 
 def start_version(module, version):
   """Start all instances for the given version of the module.
@@ -409,6 +566,9 @@ def start_version_async(
   Returns:
     A `UserRPC` to start all instances for the given module version.
   """
+  if not _has_opted_in():
+    return start_version_async_legacy(module=module, version=version)
+
   if module is None:
     module = get_current_module_name()
 
@@ -427,6 +587,24 @@ def start_version_async(
 
   return _ThreadedRpc(target=run_request)
 
+def start_version_async_legacy(module, version):
+  def _ResultHook(rpc):
+    mapped_errors = [
+        modules_service_pb2.ModulesServiceError.INVALID_VERSION,
+        modules_service_pb2.ModulesServiceError.TRANSIENT_ERROR
+    ]
+    expected_errors = {
+        modules_service_pb2.ModulesServiceError.UNEXPECTED_STATE:
+            'The specified module: %s, version: %s is already started.' %
+            (module, version)
+    }
+    _CheckAsyncResult(rpc, mapped_errors, expected_errors)
+
+  request = modules_service_pb2.StartModuleRequest()
+  request.module = module
+  request.version = version
+  response = modules_service_pb2.StartModuleResponse()
+  return _MakeAsyncCall('StartModule', request, response, _ResultHook)
 
 def stop_version(
     module=None,
@@ -459,6 +637,10 @@ def stop_version_async(
   Returns:
     A `UserRPC` to stop all instances for the given module version.
   """
+
+  if not _has_opted_in():
+    return stop_version_async_legacy(module=module, version=version)
+
   if module is None:
     module = get_current_module_name()
 
@@ -476,6 +658,28 @@ def stop_version_async(
       _raise_error(e)
 
   return _ThreadedRpc(target=run_request)
+
+def stop_version_async_legacy(module, version):
+  def _ResultHook(rpc):
+    mapped_errors = [
+        modules_service_pb2.ModulesServiceError.INVALID_VERSION,
+        modules_service_pb2.ModulesServiceError.TRANSIENT_ERROR
+    ]
+    expected_errors = {
+        modules_service_pb2.ModulesServiceError.UNEXPECTED_STATE:
+            'The specified module: %s, version: %s is already stopped.' %
+            (module, version)
+    }
+    _CheckAsyncResult(rpc, mapped_errors, expected_errors)
+    
+  request = modules_service_pb2.StopModuleRequest()
+  if module:
+    request.module = module
+  if version:
+    request.version = version
+  response = modules_service_pb2.StopModuleResponse()
+  return _MakeAsyncCall('StopModule', request, response, _ResultHook)
+
 
 def _construct_hostname(*hostname_parts):
   """Constructs a hostname for the given module, version, and instance."""
@@ -505,9 +709,9 @@ def get_hostname(
     InvalidInstancesError: if the given instance value is invalid.
     TypeError: if the given instance type is invalid.
   """
-  #
-  # START FIX: Validate instance parameter at the beginning of the function.
-  #
+  if not _has_opted_in():
+    return get_hostname_legacy(module=module, version=version, instance=instance)
+
   if instance is not None:
     try:
       instance_id = int(instance)
@@ -515,23 +719,18 @@ def get_hostname(
         raise ValueError
     except (ValueError, TypeError) as e:
       raise InvalidInstancesError("Instance must be a non-negative integer.") from e
-  #
-  # END FIX
-  #
 
   project_id = _get_project_id()
-  client = discovery.build('appengine', 'v1')
+  
 
   req_module = module or get_current_module_name()
-  # If version is not specified, we will use the version of the current context.
   req_version = version or get_current_version_name()
 
   try:
-    # Get the application's services to check for the legacy "no-engine" case.
     services = get_modules()
-
-    # Get the application's default hostname
+    client = _get_admin_api_client_with_useragent('get_hostname')
     request = client.apps().get(appsId=project_id)
+    
     response = request.execute()
     default_hostname = response.get('defaultHostname')
 
@@ -547,15 +746,12 @@ def get_hostname(
       return _construct_hostname(instance, req_version, default_hostname)
     return _construct_hostname(req_version, default_hostname)
 
-  # --- Cases for modern applications with one or more services ---
-
   if instance is not None:
-    # Request for a specific instance
     try:
       # Get version details to check scaling and instance count
-      request = client.apps().services().versions().get(
+      version_request = discovery.build('appengine', 'v1').apps().services().versions().get(
           appsId=project_id, servicesId=req_module, versionsId=req_version, view='FULL')
-      version_details = request.execute()
+      version_details = version_request.execute()
 
       if 'manualScaling' not in version_details:
         raise InvalidInstancesError(
@@ -598,4 +794,26 @@ def get_hostname(
 
   # Request with a version but no instance
   return _construct_hostname(version, req_module, default_hostname)
+
+def get_hostname_legacy(module, version, instance):
+  def _ResultHook(rpc):
+    mapped_errors = [
+        modules_service_pb2.ModulesServiceError.INVALID_MODULE,
+        modules_service_pb2.ModulesServiceError.INVALID_INSTANCES
+    ]
+    _CheckAsyncResult(rpc, mapped_errors, [])
+    return rpc.response.hostname
+
+  request = modules_service_pb2.GetHostnameRequest()
+  if module:
+    request.module = module
+  if version:
+    request.version = version
+  if instance or instance == 0:
+    if not isinstance(instance, (six.string_types, six.integer_types)):
+      raise TypeError("'instance' arg must be of type basestring, long or int.")
+    request.instance = str(instance)
+  response = modules_service_pb2.GetHostnameResponse()
+  return _MakeAsyncCall('GetHostname', request, response,
+                        _ResultHook).get_result()
 
