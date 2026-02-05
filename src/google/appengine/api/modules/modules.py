@@ -756,7 +756,7 @@ def get_hostname(
     _raise_error(e)
 
   if req_module not in services:
-    raise InvalidModuleError(f"Module '{req_module}' not found.")
+    raise InvalidModuleError(f"")
   # Legacy Applications (Without "Engines")
   if len(services) == 1 and services[0] == 'default':
     if req_module != 'default':
