@@ -294,7 +294,7 @@ def get_versions(module=None):
     response = request.execute()
   except errors.HttpError as e:
     if e.resp.status == 404:
-      raise InvalidModuleError(f"Module '{module}' not found.") from e
+      raise InvalidModuleError(f"") from e
     _raise_error(e)
 
   return [version['id'] for version in response.get('versions', [])]
@@ -348,7 +348,7 @@ def get_default_version(module=None):
     response = request.execute()
   except errors.HttpError as e:
     if e.resp.status == 404:
-        raise InvalidModuleError(f"Module '{module}' not found.") from e
+        raise InvalidModuleError(f"") from e
     _raise_error(e)
 
   allocations = response.get('split', {}).get('allocations')
@@ -430,6 +430,8 @@ def get_num_instances(
   try:
     response = request.execute()
   except errors.HttpError as e:
+    if e.resp.status == 404:
+        raise InvalidModuleError(f"") from e
     _raise_error(e)
 
   if 'manualScaling' in response:
@@ -753,6 +755,8 @@ def get_hostname(
   except errors.HttpError as e:
     _raise_error(e)
 
+  if req_module not in services:
+    _raise raise InvalidModuleError(f"Module '{req_module}' not found.")
   # Legacy Applications (Without "Engines")
   if len(services) == 1 and services[0] == 'default':
     if req_module != 'default':
@@ -832,4 +836,3 @@ def get_hostname_legacy(module, version, instance):
   response = modules_service_pb2.GetHostnameResponse()
   return _MakeAsyncCall('GetHostname', request, response,
                         _ResultHook).get_result()
-
