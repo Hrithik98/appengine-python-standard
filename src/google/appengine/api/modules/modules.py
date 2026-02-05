@@ -434,10 +434,11 @@ def get_num_instances(
         raise InvalidModuleError(f"") from e
     _raise_error(e)
 
-  if 'manualScaling' in response:
-      return response['manualScaling'].get('instances')
+  if 'manualScaling' not in response:
+      raise InvalidVersionError(f"")
+  
+  return response['manualScaling'].get('instances')
 
-  return 0
   
 def get_num_instances_legacy(module, version):
   def _ResultHook(rpc):
