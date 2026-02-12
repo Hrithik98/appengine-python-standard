@@ -837,3 +837,4 @@ def get_hostname_legacy(module, version, instance):
   response = modules_service_pb2.GetHostnameResponse()
   return _MakeAsyncCall('GetHostname', request, response,
                         _ResultHook).get_result()
+
